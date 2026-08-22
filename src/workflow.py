@@ -1,13 +1,6 @@
 import re
-import socket
-import subprocess
-import sys
 import tempfile
-import time
 from dataclasses import dataclass
-from pathlib import Path
-from urllib.error import URLError
-from urllib.request import urlopen
 
 from autogen import AssistantAgent, UserProxyAgent
 
@@ -22,13 +15,6 @@ class CodingResult:
 class StreamlitAppResult:
     code: str
     response: str
-
-
-@dataclass
-class RunningStreamlitApp:
-    url: str
-    source_path: Path
-    process: subprocess.Popen[bytes]
 
 
 def _llm_config(*, api_key: str, model: str) -> dict:
@@ -131,52 +117,3 @@ def generate_streamlit_app(*, task: str, api_key: str, model: str) -> StreamlitA
     if not re.search(r"(^|\n)\s*(?:import\s+streamlit|from\s+streamlit)", code):
         raise ValueError("The generated code is not a Streamlit application.")
     return StreamlitAppResult(code=code, response=response)
-
-
-def _available_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
-
-
-def launch_streamlit_app(code: str) -> RunningStreamlitApp:
-    """Write generated code to a temporary file and start it with Streamlit."""
-
-    compile(code, "generated_streamlit_app.py", "exec")
-    app_directory = Path(tempfile.mkdtemp(prefix="codepilot-streamlit-"))
-    source_path = app_directory / "app.py"
-    source_path.write_text(code, encoding="utf-8")
-    port = _available_port()
-    url = f"http://127.0.0.1:{port}"
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            str(source_path),
-            "--server.headless=true",
-            "--server.address=127.0.0.1",
-            f"--server.port={port}",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-
-    for _ in range(30):
-        if process.poll() is not None:
-            raise RuntimeError("The generated Streamlit app stopped during startup.")
-        try:
-            with urlopen(url, timeout=0.25) as response:
-                if response.status == 200:
-                    return RunningStreamlitApp(
-                        url=url,
-                        source_path=source_path,
-                        process=process,
-                    )
-        except (URLError, TimeoutError):
-            time.sleep(0.1)
-
-    process.terminate()
-    raise RuntimeError("The generated Streamlit app did not start in time.")

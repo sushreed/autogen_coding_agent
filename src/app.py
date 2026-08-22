@@ -1,11 +1,11 @@
 import streamlit as st
 
 try:
-    from src.workflow import generate_streamlit_app, launch_streamlit_app, run_coding_agent
+    from src.workflow import generate_streamlit_app, run_coding_agent
 except ModuleNotFoundError as exc:
     if exc.name != "src":
         raise
-    from workflow import generate_streamlit_app, launch_streamlit_app, run_coding_agent
+    from workflow import generate_streamlit_app, run_coding_agent
 
 
 st.set_page_config(
@@ -208,10 +208,7 @@ if run_clicked:
             progress.empty()
             st.session_state.generated_streamlit_code = generated.code
             st.session_state.generated_streamlit_response = generated.response
-            previous_process = st.session_state.pop("generated_streamlit_process", None)
-            st.session_state.pop("generated_streamlit_url", None)
-            if previous_process is not None and previous_process.poll() is None:
-                previous_process.terminate()
+            st.session_state.run_generated_streamlit_app = False
             st.success("App generated. Review its source below, then launch it when ready.")
     else:
         progress = st.progress(10, text="Sending the task to the coding agent…")
@@ -247,28 +244,26 @@ if build_mode == "Streamlit app" and st.session_state.get("generated_streamlit_c
     st.warning(
         "Launching executes AI-generated code on this computer. Review the source before running it."
     )
-    launch_column, link_column = st.columns([1, 2])
-    with launch_column:
-        launch_clicked = st.button(
-            "▶ Run Streamlit app",
-            type="primary",
-            use_container_width=True,
-        )
+    launch_clicked = st.button(
+        "▶ Run Streamlit app",
+        type="primary",
+        use_container_width=True,
+    )
     if launch_clicked:
-        previous_process = st.session_state.get("generated_streamlit_process")
-        if previous_process is not None and previous_process.poll() is None:
-            previous_process.terminate()
-        try:
-            running_app = launch_streamlit_app(st.session_state.generated_streamlit_code)
-        except Exception as exc:
-            st.error(f"The generated app could not start: {exc}")
-        else:
-            st.session_state.generated_streamlit_process = running_app.process
-            st.session_state.generated_streamlit_url = running_app.url
+        st.session_state.run_generated_streamlit_app = True
 
-    generated_url = st.session_state.get("generated_streamlit_url")
-    generated_process = st.session_state.get("generated_streamlit_process")
-    if generated_url and generated_process is not None and generated_process.poll() is None:
-        with link_column:
-            st.success(f"Generated app is running at {generated_url}")
-            st.link_button("Open generated app ↗", generated_url, use_container_width=True)
+    if st.session_state.get("run_generated_streamlit_app"):
+        st.divider()
+        st.markdown("### App preview")
+        try:
+            generated_namespace = {"__name__": "__main__"}
+            exec(
+                compile(
+                    st.session_state.generated_streamlit_code,
+                    "generated_streamlit_app.py",
+                    "exec",
+                ),
+                generated_namespace,
+            )
+        except Exception as exc:
+            st.error(f"The generated app stopped with an error: {exc}")
