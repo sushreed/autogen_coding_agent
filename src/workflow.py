@@ -1,5 +1,13 @@
+import re
+import socket
+import subprocess
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from autogen import AssistantAgent, UserProxyAgent
 
@@ -10,10 +18,21 @@ class CodingResult:
     transcript: list[dict[str, str]]
 
 
-def run_coding_agent(*, task: str, api_key: str, model: str) -> CodingResult:
-    """Generate and execute Python with AutoGen 0.2's UserProxyAgent."""
+@dataclass
+class StreamlitAppResult:
+    code: str
+    response: str
 
-    llm_config = {
+
+@dataclass
+class RunningStreamlitApp:
+    url: str
+    source_path: Path
+    process: subprocess.Popen[bytes]
+
+
+def _llm_config(*, api_key: str, model: str) -> dict:
+    return {
         "config_list": [
             {
                 "model": model,
@@ -24,6 +43,12 @@ def run_coding_agent(*, task: str, api_key: str, model: str) -> CodingResult:
         "temperature": 0,
         "timeout": 120,
     }
+
+
+def run_coding_agent(*, task: str, api_key: str, model: str) -> CodingResult:
+    """Generate and execute Python with AutoGen 0.2's UserProxyAgent."""
+
+    llm_config = _llm_config(api_key=api_key, model=model)
 
     with tempfile.TemporaryDirectory(prefix="autogen-coder-") as work_dir:
         coding_agent = AssistantAgent(
@@ -74,3 +99,84 @@ def run_coding_agent(*, task: str, api_key: str, model: str) -> CodingResult:
         transcript[-1]["content"] if transcript else "The agent returned no answer."
     )
     return CodingResult(answer=answer, transcript=transcript)
+
+
+def generate_streamlit_app(*, task: str, api_key: str, model: str) -> StreamlitAppResult:
+    """Ask AutoGen for one self-contained Streamlit application."""
+
+    coding_agent = AssistantAgent(
+        name="streamlit_coding_agent",
+        llm_config=_llm_config(api_key=api_key, model=model),
+        system_message=(
+            "You build small, polished Streamlit applications. Return exactly one complete "
+            "Python file in a fenced python code block, followed by a short explanation. "
+            "The file must run with `streamlit run app.py`. Use only Python's standard "
+            "library and Streamlit. Do not access environment variables, secrets, the "
+            "network, subprocesses, operating-system commands, or files outside the app. "
+            "Do not use input() or include shell commands. Use fixed sample data when the "
+            "request does not provide data."
+        ),
+    )
+    reply = coding_agent.generate_reply(
+        messages=[{"role": "user", "content": task}],
+        sender=None,
+    )
+    response = reply.get("content", "") if isinstance(reply, dict) else str(reply or "")
+    match = re.search(r"```(?:python|py)?\s*\n(.*?)```", response, flags=re.DOTALL | re.IGNORECASE)
+    if not match:
+        raise ValueError("The coding agent did not return a fenced Python application.")
+
+    code = match.group(1).strip() + "\n"
+    compile(code, "generated_streamlit_app.py", "exec")
+    if not re.search(r"(^|\n)\s*(?:import\s+streamlit|from\s+streamlit)", code):
+        raise ValueError("The generated code is not a Streamlit application.")
+    return StreamlitAppResult(code=code, response=response)
+
+
+def _available_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def launch_streamlit_app(code: str) -> RunningStreamlitApp:
+    """Write generated code to a temporary file and start it with Streamlit."""
+
+    compile(code, "generated_streamlit_app.py", "exec")
+    app_directory = Path(tempfile.mkdtemp(prefix="codepilot-streamlit-"))
+    source_path = app_directory / "app.py"
+    source_path.write_text(code, encoding="utf-8")
+    port = _available_port()
+    url = f"http://127.0.0.1:{port}"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(source_path),
+            "--server.headless=true",
+            "--server.address=127.0.0.1",
+            f"--server.port={port}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    for _ in range(30):
+        if process.poll() is not None:
+            raise RuntimeError("The generated Streamlit app stopped during startup.")
+        try:
+            with urlopen(url, timeout=0.25) as response:
+                if response.status == 200:
+                    return RunningStreamlitApp(
+                        url=url,
+                        source_path=source_path,
+                        process=process,
+                    )
+        except (URLError, TimeoutError):
+            time.sleep(0.1)
+
+    process.terminate()
+    raise RuntimeError("The generated Streamlit app did not start in time.")

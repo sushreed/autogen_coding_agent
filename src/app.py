@@ -1,6 +1,6 @@
 import streamlit as st
 
-from workflow import run_coding_agent
+from src.workflow import generate_streamlit_app, launch_streamlit_app, run_coding_agent
 
 
 st.set_page_config(
@@ -79,19 +79,33 @@ st.markdown(
     <section class="hero">
       <div class="eyebrow">AutoGen powered · real execution</div>
       <h1>CodePilot ⚡</h1>
-      <p>Describe a small programming challenge. One focused agent writes the
-      solution, a UserProxyAgent runs it, and CodePilot explains the verified result.</p>
+      <p>Describe a Python task or a Streamlit application. AutoGen writes the
+      source, and CodePilot lets you execute it locally.</p>
     </section>
     """,
     unsafe_allow_html=True,
 )
 
+build_mode = st.radio(
+    "Build type",
+    ["Python task", "Streamlit app"],
+    horizontal=True,
+    help="Python tasks run immediately. Streamlit apps are generated for review before launch.",
+)
+
 steps = st.columns(3)
-step_content = [
-    ("01 · PROMPT", "Describe", "Tell CodePilot what Python should calculate or demonstrate."),
-    ("02 · BUILD", "Generate", "The coding agent creates a compact standard-library solution."),
-    ("03 · VERIFY", "Execute", "UserProxyAgent runs the code and returns its actual output."),
-]
+if build_mode == "Streamlit app":
+    step_content = [
+        ("01 · PROMPT", "Describe", "Explain the Streamlit experience you want to create."),
+        ("02 · BUILD", "Generate", "The coding agent creates a complete Streamlit script."),
+        ("03 · LAUNCH", "Run", "Review the source, then launch the generated app locally."),
+    ]
+else:
+    step_content = [
+        ("01 · PROMPT", "Describe", "Tell CodePilot what Python should calculate or demonstrate."),
+        ("02 · BUILD", "Generate", "The coding agent creates a compact standard-library solution."),
+        ("03 · VERIFY", "Execute", "UserProxyAgent runs the code and returns its actual output."),
+    ]
 for column, (number, title, copy) in zip(steps, step_content):
     with column:
         st.markdown(
@@ -111,40 +125,89 @@ with st.sidebar:
     model = st.text_input("Model", value="openai/gpt-4o-mini")
 
 st.markdown("### What should CodePilot build?")
-examples = {
-    "Choose an example…": "",
-    "Fibonacci explorer": "Print the first 15 Fibonacci numbers and their sum.",
-    "Prime number check": "Find every prime number between 1 and 100 and print the count.",
-    "Text frequency": "Count the frequency of each word in 'agents write code and agents verify code'.",
-    "Monte Carlo π": "Estimate pi with a deterministic Monte Carlo simulation using seed 42.",
-}
+if build_mode == "Streamlit app":
+    examples = {
+        "Choose an example…": "",
+        "Personal budget dashboard": (
+            "Build a personal budget dashboard with editable income and expense inputs, "
+            "summary metrics, and a category chart."
+        ),
+        "Quiz app": (
+            "Build a five-question Python quiz with a score, progress indicator, and restart button."
+        ),
+        "Unit converter": (
+            "Build a polished unit converter for length, temperature, and weight."
+        ),
+    }
+else:
+    examples = {
+        "Choose an example…": "",
+        "Fibonacci explorer": "Print the first 15 Fibonacci numbers and their sum.",
+        "Prime number check": "Find every prime number between 1 and 100 and print the count.",
+        "Text frequency": "Count the frequency of each word in 'agents write code and agents verify code'.",
+        "Monte Carlo π": "Estimate pi with a deterministic Monte Carlo simulation using seed 42.",
+    }
 selected_example = st.selectbox("Quick start", list(examples), label_visibility="collapsed")
 
-if "coding_task" not in st.session_state:
-    st.session_state.coding_task = ""
-if examples[selected_example] and st.session_state.get("last_example") != selected_example:
-    st.session_state.coding_task = examples[selected_example]
-    st.session_state.last_example = selected_example
+task_key = "streamlit_task" if build_mode == "Streamlit app" else "coding_task"
+example_key = f"last_example_{task_key}"
+if task_key not in st.session_state:
+    st.session_state[task_key] = ""
+if examples[selected_example] and st.session_state.get(example_key) != selected_example:
+    st.session_state[task_key] = examples[selected_example]
+    st.session_state[example_key] = selected_example
 
 task = st.text_area(
     "Coding task",
-    key="coding_task",
+    key=task_key,
     height=180,
     label_visibility="collapsed",
-    placeholder="Example: Calculate the first 15 Fibonacci numbers and print their sum.",
+    placeholder=(
+        "Example: Build a habit tracker with daily checkboxes and progress metrics."
+        if build_mode == "Streamlit app"
+        else "Example: Calculate the first 15 Fibonacci numbers and print their sum."
+    ),
 )
 
 run_column, hint_column = st.columns([1, 2])
 with run_column:
-    run_clicked = st.button("⚡ Write & run", type="primary", use_container_width=True)
+    run_clicked = st.button(
+        "✨ Generate app" if build_mode == "Streamlit app" else "⚡ Write & run",
+        type="primary",
+        use_container_width=True,
+    )
 with hint_column:
-    st.caption("Best for small, self-contained Python tasks using the standard library.")
+    if build_mode == "Streamlit app":
+        st.caption("Generated code is shown for review and only runs when you launch it.")
+    else:
+        st.caption("Best for small, self-contained Python tasks using the standard library.")
 
 if run_clicked:
     if not api_key.strip():
         st.error("Add an OpenRouter API key in the sidebar.")
     elif not task.strip():
         st.error("Describe a coding task first.")
+    elif build_mode == "Streamlit app":
+        progress = st.progress(20, text="Asking AutoGen to build the Streamlit app…")
+        try:
+            generated = generate_streamlit_app(
+                task=task.strip(),
+                api_key=api_key.strip(),
+                model=model.strip(),
+            )
+        except Exception as exc:
+            progress.empty()
+            st.error(f"CodePilot could not generate the Streamlit app: {exc}")
+        else:
+            progress.progress(100, text="Streamlit source generated")
+            progress.empty()
+            st.session_state.generated_streamlit_code = generated.code
+            st.session_state.generated_streamlit_response = generated.response
+            previous_process = st.session_state.pop("generated_streamlit_process", None)
+            st.session_state.pop("generated_streamlit_url", None)
+            if previous_process is not None and previous_process.poll() is None:
+                previous_process.terminate()
+            st.success("App generated. Review its source below, then launch it when ready.")
     else:
         progress = st.progress(10, text="Sending the task to the coding agent…")
         try:
@@ -172,3 +235,35 @@ if run_clicked:
                         expanded=index == len(result.transcript),
                     ):
                         st.markdown(message["content"])
+
+if build_mode == "Streamlit app" and st.session_state.get("generated_streamlit_code"):
+    st.markdown("### Generated Streamlit application")
+    st.code(st.session_state.generated_streamlit_code, language="python", line_numbers=True)
+    st.warning(
+        "Launching executes AI-generated code on this computer. Review the source before running it."
+    )
+    launch_column, link_column = st.columns([1, 2])
+    with launch_column:
+        launch_clicked = st.button(
+            "▶ Run Streamlit app",
+            type="primary",
+            use_container_width=True,
+        )
+    if launch_clicked:
+        previous_process = st.session_state.get("generated_streamlit_process")
+        if previous_process is not None and previous_process.poll() is None:
+            previous_process.terminate()
+        try:
+            running_app = launch_streamlit_app(st.session_state.generated_streamlit_code)
+        except Exception as exc:
+            st.error(f"The generated app could not start: {exc}")
+        else:
+            st.session_state.generated_streamlit_process = running_app.process
+            st.session_state.generated_streamlit_url = running_app.url
+
+    generated_url = st.session_state.get("generated_streamlit_url")
+    generated_process = st.session_state.get("generated_streamlit_process")
+    if generated_url and generated_process is not None and generated_process.poll() is None:
+        with link_column:
+            st.success(f"Generated app is running at {generated_url}")
+            st.link_button("Open generated app ↗", generated_url, use_container_width=True)

@@ -19,6 +19,10 @@ Enter an OpenRouter API key and an OpenRouter model name in the sidebar, then
 submit a small coding task. The API key remains in the current Streamlit session
 and is passed directly to AutoGen's OpenAI-compatible model client.
 
+Choose **Streamlit app** to have AutoGen generate a complete Streamlit script.
+CodePilot displays the source for review before the **Run Streamlit app** button
+starts it on an available localhost port.
+
 ## Execution policy
 
 Generated code runs locally in a temporary directory using
