@@ -21,7 +21,8 @@ and is passed directly to AutoGen's OpenAI-compatible model client.
 
 Choose **Streamlit app** to have AutoGen generate a complete Streamlit script.
 CodePilot displays the source for review before the **Run Streamlit app** button
-starts it on an available localhost port.
+renders it as an interactive preview inside CodePilot. This approach works both
+locally and on Streamlit Community Cloud without opening a second server port.
 
 ## Execution policy
 
