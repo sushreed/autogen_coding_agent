@@ -1,11 +1,11 @@
 import streamlit as st
 
 try:
-    from src.workflow import generate_streamlit_app, run_coding_agent
+    from src.workflow import generate_streamlit_app, publish_streamlit_app, run_coding_agent
 except ModuleNotFoundError as exc:
     if exc.name != "src":
         raise
-    from workflow import generate_streamlit_app, run_coding_agent
+    from workflow import generate_streamlit_app, publish_streamlit_app, run_coding_agent
 
 
 st.set_page_config(
@@ -209,6 +209,7 @@ if run_clicked:
             st.session_state.generated_streamlit_code = generated.code
             st.session_state.generated_streamlit_response = generated.response
             st.session_state.run_generated_streamlit_app = False
+            st.session_state.pop("github_publish_result", None)
             st.success("App generated. Review its source below, then launch it when ready.")
     else:
         progress = st.progress(10, text="Sending the task to the coding agent…")
@@ -267,3 +268,53 @@ if build_mode == "Streamlit app" and st.session_state.get("generated_streamlit_c
             )
         except Exception as exc:
             st.error(f"The generated app stopped with an error: {exc}")
+
+    with st.expander("Publish generated app to GitHub", expanded=False):
+        st.caption(
+            "The token is used only for this request and must have permission to write "
+            "repository contents. The selected branch must already exist."
+        )
+        with st.form("github_publish_form"):
+            github_token = st.text_input("GitHub token", type="password")
+            github_repository = st.text_input(
+                "Repository",
+                placeholder="owner/repository or https://github.com/owner/repository",
+            )
+            repository_column, path_column = st.columns(2)
+            with repository_column:
+                github_branch = st.text_input("Branch", value="main")
+            with path_column:
+                github_file_path = st.text_input("File path", value="generated_app/app.py")
+            github_commit_message = st.text_input(
+                "Commit message",
+                value="Add generated Streamlit app",
+            )
+            publish_clicked = st.form_submit_button(
+                "Push to GitHub",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if publish_clicked:
+            try:
+                publish_result = publish_streamlit_app(
+                    code=st.session_state.generated_streamlit_code,
+                    repository=github_repository,
+                    branch=github_branch,
+                    file_path=github_file_path,
+                    commit_message=github_commit_message,
+                    token=github_token,
+                )
+            except Exception as exc:
+                st.error(f"Could not push the generated app: {exc}")
+            else:
+                st.session_state.github_publish_result = publish_result
+                st.success(f"Pushed successfully in commit {publish_result.commit_sha[:7]}.")
+
+        publish_result = st.session_state.get("github_publish_result")
+        if publish_result:
+            link_column, commit_column = st.columns(2)
+            with link_column:
+                st.link_button("View generated file ↗", publish_result.file_url, use_container_width=True)
+            with commit_column:
+                st.link_button("View commit ↗", publish_result.commit_url, use_container_width=True)

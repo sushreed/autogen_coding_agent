@@ -1,6 +1,11 @@
+import base64
+import json
 import re
 import tempfile
 from dataclasses import dataclass
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from autogen import AssistantAgent, UserProxyAgent
 
@@ -15,6 +20,13 @@ class CodingResult:
 class StreamlitAppResult:
     code: str
     response: str
+
+
+@dataclass
+class GitHubPublishResult:
+    commit_sha: str
+    commit_url: str
+    file_url: str
 
 
 def _llm_config(*, api_key: str, model: str) -> dict:
@@ -117,3 +129,95 @@ def generate_streamlit_app(*, task: str, api_key: str, model: str) -> StreamlitA
     if not re.search(r"(^|\n)\s*(?:import\s+streamlit|from\s+streamlit)", code):
         raise ValueError("The generated code is not a Streamlit application.")
     return StreamlitAppResult(code=code, response=response)
+
+
+def _repository_name(repository: str) -> str:
+    value = repository.strip().removesuffix(".git").rstrip("/")
+    for prefix in ("https://github.com/", "http://github.com/", "github.com/"):
+        if value.startswith(prefix):
+            value = value.removeprefix(prefix)
+            break
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
+        raise ValueError("Enter the repository as owner/name or a GitHub repository URL.")
+    return value
+
+
+def _github_error(error: HTTPError) -> RuntimeError:
+    try:
+        details = json.loads(error.read().decode("utf-8")).get("message", "")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        details = ""
+    message = details or error.reason or "GitHub request failed"
+    return RuntimeError(f"GitHub returned {error.code}: {message}")
+
+
+def publish_streamlit_app(
+    *,
+    code: str,
+    repository: str,
+    branch: str,
+    file_path: str,
+    commit_message: str,
+    token: str,
+) -> GitHubPublishResult:
+    """Create or update a generated app through GitHub's contents API."""
+
+    repository = _repository_name(repository)
+    branch = branch.strip()
+    commit_message = commit_message.strip()
+    file_path = file_path.strip().strip("/")
+    if not branch:
+        raise ValueError("Enter a GitHub branch.")
+    if not commit_message:
+        raise ValueError("Enter a commit message.")
+    if not token.strip():
+        raise ValueError("Enter a GitHub token.")
+    if not file_path or any(part in {".", ".."} for part in file_path.split("/")):
+        raise ValueError("Enter a valid repository file path, such as generated_app/app.py.")
+
+    api_url = f"https://api.github.com/repos/{repository}/contents/{quote(file_path)}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token.strip()}",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "CodePilot-Streamlit-App",
+    }
+    existing_sha = None
+    request = Request(f"{api_url}?ref={quote(branch, safe='')}", headers=headers)
+    try:
+        with urlopen(request, timeout=30) as response:
+            existing_sha = json.load(response).get("sha")
+    except HTTPError as error:
+        if error.code != 404:
+            raise _github_error(error) from error
+    except URLError as error:
+        raise RuntimeError(f"Could not connect to GitHub: {error.reason}") from error
+
+    payload = {
+        "message": commit_message,
+        "content": base64.b64encode(code.encode("utf-8")).decode("ascii"),
+        "branch": branch,
+    }
+    if existing_sha:
+        payload["sha"] = existing_sha
+    request = Request(
+        api_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            result = json.load(response)
+    except HTTPError as error:
+        raise _github_error(error) from error
+    except URLError as error:
+        raise RuntimeError(f"Could not connect to GitHub: {error.reason}") from error
+
+    commit = result.get("commit", {})
+    content = result.get("content", {})
+    return GitHubPublishResult(
+        commit_sha=commit.get("sha", ""),
+        commit_url=commit.get("html_url", ""),
+        file_url=content.get("html_url", ""),
+    )
