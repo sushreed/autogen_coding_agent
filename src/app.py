@@ -1,6 +1,11 @@
 import streamlit as st
 
-from src.workflow import generate_streamlit_app, launch_streamlit_app, run_coding_agent
+try:
+    from src.workflow import generate_streamlit_app, launch_streamlit_app, run_coding_agent
+except ModuleNotFoundError as exc:
+    if exc.name != "src":
+        raise
+    from workflow import generate_streamlit_app, launch_streamlit_app, run_coding_agent
 
 
 st.set_page_config(
